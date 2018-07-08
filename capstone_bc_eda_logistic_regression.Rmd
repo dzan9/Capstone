@@ -1,0 +1,169 @@
+---
+title: "capstone_bc_eda"
+author: "Yi Zang"
+date: "June 30, 2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+## Section 1
+data preprocessing
+```{r process, message=F}
+bc_data <- read.csv('bc_data.csv')
+bc_data <- bc_data[,3:ncol(bc_data)-1]
+names <- colnames(bc_data)
+
+
+bc_data_sort <- bc_data[order(bc_data$diagnosis),]
+
+#spilt data by diagnosis
+data_b <- bc_data[which(bc_data$diagnosis == 'B'),]
+data_m <- bc_data[which(bc_data$diagnosis == 'M'),]
+
+#reject outliers by iqr method
+filter_index <- data.frame(matrix(ncol = 30,nrow = nrow(data_b)))
+threshold <-2.5
+for(i in c(2:ncol(data_b))){
+  q1 <- quantile(data_b[,i],.25)
+  q3 <- quantile(data_b[,i],.75)
+  iqr <- q3-q1
+  upperLimit <- q3+threshold*iqr
+  lowerLimit <- q1-threshold*iqr
+  filter_index[,i-1]<- (data_b[,i]<lowerLimit | data_b[,i]>upperLimit)
+}
+filter <-c()
+for (i in c(1:nrow(data_b))){
+  filter[i] <- any(data.matrix(filter_index[i,]))
+}
+
+filter_index <- data.frame(matrix(ncol = 30,nrow = nrow(data_m)))
+for(i in c(2:ncol(data_m))){
+  q1 <- quantile(data_m[,i],.25)
+  q3 <- quantile(data_m[,i],.75)
+  iqr <- q3-q1
+  upperLimit <- q3+threshold*iqr
+  lowerLimit <- q1-threshold*iqr
+  filter_index[,i-1]<- (data_m[,i]<lowerLimit | data_m[,i]>upperLimit)
+}
+filter1 <- c()
+for (i in c(1:nrow(data_m))){
+  filter1[i] <- any(data.matrix(filter_index[i,]))
+}
+f <-c(filter,filter1)
+data_sort_clean<- bc_data_sort[which(f==FALSE),]
+```
+
+## Section 2
+EDA
+
+```{r eda, message=F}
+
+#study relationship between diagnosis with all included features
+for(i in c(2:ncol(data_sort_clean))){
+ boxplot(data_sort_clean[,i]~data_sort_clean[,1],xlab = 'diagnosis',ylab=names[i])
+}
+
+```
+## Section 3
+Remove pair wise corelation
+```{r Remove pair wise corelation, message=F}
+library('caret')
+corelation<-cor(data_sort_clean[,2:ncol(data_sort_clean)])
+hc <- findCorrelation(corelation,cutoff=0.7)
+hc <- sort(hc+1)
+data_sort_clean_filter <-data_sort_clean[,-c(hc)]
+
+names_filter <- colnames(data_sort_clean_filter)
+names_filter
+names
+```
+## Section 4
+Build regression model
+```{r modelling ,message = F}
+# standardization
+data_sort_clean_filter[,2:ncol(data_sort_clean_filter)] <- scale(data_sort_clean_filter[,2:ncol(data_sort_clean_filter)])
+
+#train test spilt
+smp_size<-floor(.75*nrow(data_sort_clean_filter))
+set.seed(10)
+train_id <- sample(seq_len(nrow(data_sort_clean_filter)),size=smp_size)
+train_filter <- data_sort_clean_filter[train_id,]
+test_filter <- data_sort_clean_filter[-train_id,]
+
+#simple Linear model
+library(pROC)
+mdl_1 = glm(diagnosis ~ .,family ='binomial',train_filter)
+summary(mdl_1)
+
+comparison <- data.frame(matrix(ncol = 2,nrow = nrow(train_filter)))
+pred <- predict(mdl_1,type=c('response'))
+comparison$pred <-pred
+comparison$gt <- train_filter[,1]
+
+g<- roc(gt~pred,data=comparison)
+print('simple linear model training AUC')
+plot(g)
+g$auc
+
+pred_test <- predict(mdl_1,test_filter,type=c('response'))
+comparison_test<-data.frame(matrix(ncol=2,nrow=nrow(test_filter)))
+comparison_test$pred <- pred_test
+comparison_test$gt<-test_filter[,1]
+g_test<-roc(gt~pred,data=comparison_test)
+print('simple linear model testing AUC')
+plot(g_test)
+g_test$auc
+
+#cross validated linear model
+library(glmnet)
+x <- as.matrix(train_filter[,2:ncol(train_filter)])
+y <- as.matrix(train_filter[,1])
+
+#cross validation between different regularizaiton
+foldid <- sample(1:10,size=length(y),replace=T)
+cv1 <- cv.glmnet(x,y,foldid=foldid,alpha=1,family = 'binomial')
+cv0.5 <- cv.glmnet(x,y,foldid=foldid,alpha=0.5,family = 'binomial')
+cv0 <- cv.glmnet(x,y,foldid=foldid,alpha=0,family = 'binomial')
+par(mfrow=c(2,2))
+plot(cv1);plot(cv0.5);plot(cv0)
+plot(log(cv1$lambda),cv1$cvm,pch=19,col="red",xlab="log(Lambda)",ylab=cv1$name)
+points(log(cv0.5$lambda),cv0.5$cvm,pch=19,col="grey")
+points(log(cv0$lambda),cv0$cvm,pch=19,col="blue")
+legend("topleft",legend=c("alpha= 1","alpha= .5","alpha 0"),pch=19,col=c("red","grey","blue"))
+
+#use elastic net 
+par(mfrow=c(1,1))
+mdl_2 = cv.glmnet(x,y,family='binomial',alpha = 0.5)
+plot(mdl_2)
+coef(mdl_2,s='lambda.min')
+
+library(pROC)
+comparison <- data.frame(matrix(ncol = 2,nrow = nrow(train_filter)))
+pred <- predict(mdl_2,newx = x ,type=c('response'),s='lambda.min')
+comparison$pred <-pred
+comparison$gt <- train_filter[,1]
+g.cv<- roc(gt~pred,data=comparison)
+print('lm model with regularization training AUC')
+plot(g.cv)
+g.cv$auc
+
+x_test <- as.matrix(test_filter[,2:ncol(test_filter)])
+pred_test <- predict(mdl_2,newx= x_test,type=c('response'),s='lambda.min')
+comparison_test<-data.frame(matrix(ncol=2,nrow=nrow(test_filter)))
+comparison_test$pred <- pred_test
+comparison_test$gt<-test_filter[,1]
+g.cv_test<-roc(gt~pred,data=comparison_test)
+print('lm model with regularization testing AUC')
+plot(g.cv_test)
+g.cv_test$auc
+```
+
+
+
+
+
+

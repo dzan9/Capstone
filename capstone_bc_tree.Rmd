@@ -1,0 +1,139 @@
+---
+title: "capstone_bc_tree"
+author: "Yi Zang"
+date: "July 2, 2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Section 1
+data preprocessing
+```{r process, message=F}
+bc_data <- read.csv('bc_data.csv')
+bc_data <- bc_data[,3:ncol(bc_data)-1]
+names <- colnames(bc_data)
+
+
+
+bc_data_sort <- bc_data[order(bc_data$diagnosis),]
+
+data_b <- bc_data[which(bc_data$diagnosis == 'B'),]
+data_m <- bc_data[which(bc_data$diagnosis == 'M'),]
+
+# iqr outlier rejection
+filter_index <- data.frame(matrix(ncol = 30,nrow = nrow(data_b)))
+threshold <-2.5
+for(i in c(2:ncol(data_b))){
+  q1 <- quantile(data_b[,i],.25)
+  q3 <- quantile(data_b[,i],.75)
+  iqr <- q3-q1
+  upperLimit <- q3+threshold*iqr
+  lowerLimit <- q1-threshold*iqr
+  filter_index[,i-1]<- (data_b[,i]<lowerLimit | data_b[,i]>upperLimit | is.na(data_b[,i]))
+}
+filter <-c()
+for (i in c(1:nrow(data_b))){
+  filter[i] <- any(data.matrix(filter_index[i,]))
+}
+
+filter_index <- data.frame(matrix(ncol = 30,nrow = nrow(data_m)))
+for(i in c(2:ncol(data_m))){
+  q1 <- quantile(data_m[,i],.25)
+  q3 <- quantile(data_m[,i],.75)
+  iqr <- q3-q1
+  upperLimit <- q3+threshold*iqr
+  lowerLimit <- q1-threshold*iqr
+  filter_index[,i-1]<- (data_m[,i]<lowerLimit | data_m[,i]>upperLimit|is.na(data_m[,i]))
+}
+filter1 <- c()
+for (i in c(1:nrow(data_m))){
+  filter1[i] <- any(data.matrix(filter_index[i,]))
+}
+f <-c(filter,filter1)
+data_sort_clean<- bc_data_sort[which(f==FALSE),]
+
+# find features that are not highly corelated with eachother
+library('caret')
+corelation<-cor(data_sort_clean[,2:ncol(data_sort_clean)])
+hc <- findCorrelation(corelation,cutoff=0.7)
+hc <- sort(hc+1)
+data_sort_clean_filter <-data_sort_clean[,-c(hc)]
+head(data_sort_clean_filter)
+
+names_filter <- colnames(data_sort_clean_filter)
+names_filter
+names
+
+data_sort_clean_filter[,2:ncol(data_sort_clean_filter)] <- scale(data_sort_clean_filter[,2:ncol(data_sort_clean_filter)])
+
+smp_size<-floor(.75*nrow(data_sort_clean_filter))
+set.seed(10)
+train_id <- sample(seq_len(nrow(data_sort_clean_filter)),size=smp_size)
+train_filter <- data_sort_clean_filter[train_id,]
+test_filter <- data_sort_clean_filter[-train_id,]
+```
+## Section 2
+Build regression model
+```{r modelling ,message = F}
+#build decision trees
+library(gbm)
+ntrees <- 10000
+set.seed(10)
+mdl_boostingtree <- gbm(diagnosis~.,data=train_filter,distribution='gaussian',
+                       shrinkage=0.001,interaction.depth=4,n.trees = ntrees,bag.fraction=0.25)
+
+
+#summary(mdl_boostingtree)
+
+library(pROC)
+comparison_train <- data.frame(matrix(ncol = 2,nrow = nrow(train_filter)))
+pred<-predict(mdl_boostingtree,train_filter,n.trees=ntrees)
+comparison_train$pred <-pred
+comparison_train$gt <- train_filter[,1]
+
+g<- roc(gt~pred,data=comparison_train)
+plot(g)
+g$auc
+
+
+
+comparison_test <- data.frame(matrix(ncol = 2,nrow = nrow(test_filter)))
+pred<-predict(mdl_boostingtree,test_filter,n.trees=ntrees)
+comparison_test$pred <-pred
+comparison_test$gt <- test_filter[,1]
+
+gtest<- roc(gt~pred,data=comparison_test)
+plot(gtest)
+gtest$auc
+
+
+
+#corss validaiton of hyper-parameter
+mdl_bt_cv <- gbm(diagnosis~.,data=train_filter,distribution='gaussian',
+                     shrinkage=0.001,interaction.depth=4,n.trees = ntrees,bag.fraction=0.25,cv.folds=5,n.cores=2)
+
+bestTreeForPrediction = gbm.perf(mdl_bt_cv)
+
+comparison_train <- data.frame(matrix(ncol = 2,nrow = nrow(train_filter)))
+pred<-predict(mdl_bt_cv,train_filter,n.trees=bestTreeForPrediction)
+comparison_train$pred <-pred
+comparison_train$gt <- train_filter[,1]
+
+gcv<- roc(gt~pred,data=comparison_train)
+plot(gcv)
+gcv$auc
+
+
+
+comparison_test <- data.frame(matrix(ncol = 2,nrow = nrow(test_filter)))
+pred<-predict(mdl_boostingtree,test_filter,n.trees=bestTreeForPrediction)
+comparison_test$pred <-pred
+comparison_test$gt <- test_filter[,1]
+
+gcvtest<- roc(gt~pred,data=comparison_test)
+plot(gcvtest)
+gcvtest$auc
+```
